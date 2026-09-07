@@ -1,0 +1,14 @@
+base_url: "https://simba.kemenag.go.id"
+
+version: "V8.1.3 Kabupaten LIVE Verified"
+
+safety:
+  default_mode: "dry_run"
+  live_post_enabled: true
+  require_identity_match: true
+  require_form_discovery: true
+  prevent_duplicate_post: true
+  reject_requires_distinct_route: true
+  post_verify_status: true
+  post_verify_reject_destination: true
+  cloud_session_isolation: true

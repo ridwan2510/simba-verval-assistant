@@ -1,0 +1,6 @@
+streamlit>=1.40,<2
+requests>=2.32,<3
+beautifulsoup4>=4.12,<5
+lxml>=5.3,<7
+PyYAML>=6.0,<7
+streamlit-pdf-viewer>=0.0.26

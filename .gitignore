@@ -1,0 +1,23 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Streamlit secrets: JANGAN commit
+.streamlit/secrets.toml
+
+# Runtime state/session
+data/*.json
+!data/.gitkeep
+
+# Local/editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
