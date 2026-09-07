@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import html
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -564,6 +565,31 @@ def reset_verval_widget_state_after_submit():
     ] = {}
 
 
+# Cache hanya hidup pada session browser masing-masing.
+# Tujuannya mencegah Streamlit mengulang banyak GET SIMBA setiap kali
+# pengguna mengklik Sesuai/Perbaikan atau berpindah dokumen.
+PROPOSAL_CONTEXT_CACHE_TTL = 600  # 10 menit
+LIVE_INSPECTION_CACHE_TTL = 60    # hanya untuk tampilan; submit selalu fresh
+
+
+def _cache_entry_valid(entry: dict, ttl: int) -> bool:
+    if not isinstance(entry, dict):
+        return False
+
+    loaded_at = float(
+        entry.get("loaded_at", 0)
+        or 0
+    )
+
+    return (
+        loaded_at > 0
+        and (
+            time.time()
+            - loaded_at
+        ) < ttl
+    )
+
+
 config = load_config()
 
 
@@ -571,6 +597,10 @@ default_states = {
     "institutions": [],
     "institution_meta": {},
     "document_cache": {},
+    "proposal_context_cache": {},
+    "verification_inspection_cache": {},
+    "active_session_storage_key": "",
+    "active_institution_id": "",
     "pending_verification": None,
     "verification_preview": None,
     "verification_check": None,
@@ -607,7 +637,7 @@ st.title(
 )
 
 st.caption(
-    "Asisten pemeriksaan proposal bantuan SIMBA — V8.1.5 Streamlit Cloud Fix (Halaqah • Kemitraan • Prasarana)."
+    "Asisten pemeriksaan proposal bantuan SIMBA — V8.1.7 GET Recheck (Halaqah • Kemitraan • Prasarana)."
 )
 
 
@@ -775,6 +805,37 @@ session_storage_key = hashlib.sha256(
         errors="ignore",
     )
 ).hexdigest()[:20]
+
+# Bila Cookie SIMBA diganti, jangan memakai data/cache dari sesi sebelumnya.
+if (
+    st.session_state.get(
+        "active_session_storage_key",
+        "",
+    )
+    != session_storage_key
+):
+    st.session_state[
+        "active_session_storage_key"
+    ] = session_storage_key
+
+    st.session_state[
+        "institutions"
+    ] = []
+    st.session_state[
+        "institution_meta"
+    ] = {}
+    st.session_state[
+        "document_cache"
+    ] = {}
+    st.session_state[
+        "proposal_context_cache"
+    ] = {}
+    st.session_state[
+        "verification_inspection_cache"
+    ] = {}
+    st.session_state[
+        "active_institution_id"
+    ] = ""
 
 review_store = LocalReviewStore(
     f"data/verval_state_{session_storage_key}.json"
@@ -951,6 +1012,18 @@ with tab_verval:
             st.session_state[
                 "document_cache"
             ] = {}
+
+            st.session_state[
+                "proposal_context_cache"
+            ] = {}
+
+            st.session_state[
+                "verification_inspection_cache"
+            ] = {}
+
+            st.session_state[
+                "active_institution_id"
+            ] = ""
 
             st.session_state[
                 "pending_verification"
@@ -1156,16 +1229,135 @@ with tab_verval:
                 ]
             )
 
+            current_application_id = str(
+                institution.application_id
+                or ""
+            )
+
+            # PDF bytes bisa besar. Simpan hanya untuk lembaga yang sedang aktif
+            # agar RAM tidak terus membesar ketika memeriksa banyak lembaga.
+            if (
+                st.session_state.get(
+                    "active_institution_id",
+                    "",
+                )
+                != current_application_id
+            ):
+                st.session_state[
+                    "active_institution_id"
+                ] = current_application_id
+                st.session_state[
+                    "document_cache"
+                ] = {}
+
+            proposal_cache = st.session_state[
+                "proposal_context_cache"
+            ]
+
+            proposal_context = proposal_cache.get(
+                current_application_id,
+                {},
+            )
+
+            if not _cache_entry_valid(
+                proposal_context,
+                PROPOSAL_CONTEXT_CACHE_TTL,
+            ):
+                proposal_cache.pop(
+                    current_application_id,
+                    None,
+                )
+                proposal_context = {}
+
+            refresh_col, cache_col = st.columns(
+                [1, 3]
+            )
+
+            with refresh_col:
+                refresh_proposal_clicked = st.button(
+                    "🔄 Refresh Proposal",
+                    key=(
+                        "refresh_proposal_"
+                        + current_application_id
+                    ),
+                    use_container_width=True,
+                    help=(
+                        "Ambil ulang profil, daftar dokumen, dan form LIVE dari SIMBA."
+                    ),
+                )
+
+            with cache_col:
+                if proposal_context:
+                    age_seconds = max(
+                        0,
+                        int(
+                            time.time()
+                            - float(
+                                proposal_context.get(
+                                    "loaded_at",
+                                    time.time(),
+                                )
+                            )
+                        ),
+                    )
+                    st.caption(
+                        "⚡ Data proposal memakai cache sesi agar klik dokumen "
+                        f"tidak mengulang request SIMBA (umur cache ±{age_seconds} detik)."
+                    )
+                else:
+                    st.caption(
+                        "Data proposal akan diambil sekali dari SIMBA lalu "
+                        "dipakai ulang selama sesi untuk mempercepat navigasi."
+                    )
+
+            if refresh_proposal_clicked:
+                proposal_cache.pop(
+                    current_application_id,
+                    None,
+                )
+                st.session_state[
+                    "verification_inspection_cache"
+                ].pop(
+                    current_application_id,
+                    None,
+                )
+                st.session_state[
+                    "document_cache"
+                ] = {}
+                st.rerun()
+
             if not institution.detail_url:
                 st.error(
                     "URL Detail lembaga tidak ditemukan."
                 )
                 st.stop()
 
-            aid_title = resolve_aid_title(
-                client,
-                institution,
+            aid_title = (
+                proposal_context.get(
+                    "aid_title",
+                    "",
+                )
+                if proposal_context
+                else ""
             )
+
+            if not aid_title:
+                aid_title = resolve_aid_title(
+                    client,
+                    institution,
+                )
+
+                proposal_context.setdefault(
+                    "loaded_at",
+                    time.time(),
+                )
+                proposal_context[
+                    "aid_title"
+                ] = aid_title
+
+                proposal_cache[
+                    current_application_id
+                ] = proposal_context
 
             aid_id = getattr(
                 institution,
@@ -1212,13 +1404,34 @@ with tab_verval:
 
             try:
                 discovered = (
-                    client.discover_institution_links_resilient(
-                        institution.detail_url,
-                        prefer_processed=(
-                            prefer_processed_route
-                        ),
+                    proposal_context.get(
+                        "discovered",
+                        {},
                     )
+                    if proposal_context
+                    else {}
                 )
+
+                if not discovered:
+                    discovered = (
+                        client.discover_institution_links_resilient(
+                            institution.detail_url,
+                            prefer_processed=(
+                                prefer_processed_route
+                            ),
+                        )
+                    )
+
+                    proposal_context.setdefault(
+                        "loaded_at",
+                        time.time(),
+                    )
+                    proposal_context[
+                        "discovered"
+                    ] = discovered
+                    proposal_cache[
+                        current_application_id
+                    ] = proposal_context
 
                 active_detail_url = (
                     discovered.get(
@@ -1273,63 +1486,156 @@ with tab_verval:
                 or ""
             )
 
-            try:
-                profile = (
-                    client.parse_profile(
-                        active_detail_url
-                    )
-                    if active_detail_url
-                    else {}
+            profile = (
+                proposal_context.get(
+                    "profile",
+                    None,
                 )
-            except Exception:
-                profile = {}
+                if proposal_context
+                else None
+            )
 
-            completeness = {
-                "completed": None,
-                "total": None,
-                "text": "",
-            }
-
-            if review_url:
+            if profile is None:
                 try:
-                    completeness = (
-                        client.get_proposal_completeness(
-                            review_url
+                    detail_html = (
+                        discovered.get(
+                            "_detail_html",
+                            "",
                         )
                     )
+
+                    if detail_html:
+                        profile = (
+                            client.parse_profile_html(
+                                detail_html
+                            )
+                        )
+                    else:
+                        profile = (
+                            client.parse_profile(
+                                active_detail_url
+                            )
+                            if active_detail_url
+                            else {}
+                        )
                 except Exception:
-                    pass
+                    profile = {}
 
-            documents = []
-            document_meta = {}
+                proposal_context.setdefault(
+                    "loaded_at",
+                    time.time(),
+                )
+                proposal_context[
+                    "profile"
+                ] = profile
+                proposal_cache[
+                    current_application_id
+                ] = proposal_context
 
-            if review_url:
-                try:
-                    (
-                        documents,
-                        document_meta,
-                    ) = (
-                        client.list_proposal_documents_auto(
-                            review_url,
-                            explicit_ajax_url=(
-                                review_ajax_override
-                            ),
-                            method=(
-                                review_method
-                            ),
-                            page_size=500,
-                            extra_params=(
-                                parse_extra_params(
-                                    review_params_text
-                                )
-                            ),
+            completeness = (
+                proposal_context.get(
+                    "completeness",
+                    None,
+                )
+                if proposal_context
+                else None
+            )
+
+            documents = (
+                proposal_context.get(
+                    "documents",
+                    None,
+                )
+                if proposal_context
+                else None
+            )
+
+            document_meta = (
+                proposal_context.get(
+                    "document_meta",
+                    None,
+                )
+                if proposal_context
+                else None
+            )
+
+            if (
+                completeness is None
+                or documents is None
+                or document_meta is None
+            ):
+                completeness = {
+                    "completed": None,
+                    "total": None,
+                    "text": "",
+                }
+                documents = []
+                document_meta = {}
+
+                if review_url:
+                    review_html = ""
+
+                    try:
+                        review_html, _ = (
+                            client.get_html(
+                                review_url
+                            )
                         )
-                    )
 
-                except SimbaError as exc:
-                    st.warning(
-                        f"Gagal membaca dokumen proposal: {exc}"
-                    )
+                        completeness = (
+                            client.get_proposal_completeness_html(
+                                review_html
+                            )
+                        )
+                    except Exception:
+                        review_html = ""
+
+                    try:
+                        (
+                            documents,
+                            document_meta,
+                        ) = (
+                            client.list_proposal_documents_auto(
+                                review_url,
+                                explicit_ajax_url=(
+                                    review_ajax_override
+                                ),
+                                method=(
+                                    review_method
+                                ),
+                                page_size=100,
+                                extra_params=(
+                                    parse_extra_params(
+                                        review_params_text
+                                    )
+                                ),
+                                review_html_text=(
+                                    review_html
+                                ),
+                            )
+                        )
+
+                    except SimbaError as exc:
+                        st.warning(
+                            f"Gagal membaca dokumen proposal: {exc}"
+                        )
+
+                proposal_context.setdefault(
+                    "loaded_at",
+                    time.time(),
+                )
+                proposal_context[
+                    "completeness"
+                ] = completeness
+                proposal_context[
+                    "documents"
+                ] = documents
+                proposal_context[
+                    "document_meta"
+                ] = document_meta
+                proposal_cache[
+                    current_application_id
+                ] = proposal_context
 
             recommendation_url = getattr(
                 institution,
@@ -2217,12 +2523,53 @@ with tab_verval:
                     )
                 else:
                     try:
-                        form_inspection = (
-                            live_engine.inspect_verification_page(
-                                verification_url
+                        inspection_cache = (
+                            st.session_state[
+                                "verification_inspection_cache"
+                            ]
+                        )
+
+                        inspection_entry = (
+                            inspection_cache.get(
+                                current_application_id,
+                                {},
                             )
                         )
 
+                        if (
+                            _cache_entry_valid(
+                                inspection_entry,
+                                LIVE_INSPECTION_CACHE_TTL,
+                            )
+                            and inspection_entry.get(
+                                "verification_url"
+                            )
+                            == verification_url
+                        ):
+                            form_inspection = (
+                                inspection_entry.get(
+                                    "data",
+                                    {},
+                                )
+                            )
+                        else:
+                            form_inspection = (
+                                live_engine.inspect_verification_page(
+                                    verification_url
+                                )
+                            )
+
+                            inspection_cache[
+                                current_application_id
+                            ] = {
+                                "loaded_at": time.time(),
+                                "verification_url": verification_url,
+                                "data": form_inspection,
+                            }
+
+                        # Ini hanya cache tampilan. submit_once() tetap mengambil
+                        # form + CSRF terbaru sebelum POST sehingga safety LIVE
+                        # tidak dikurangi.
                         st.session_state[
                             "verification_form_inspection"
                         ] = form_inspection
@@ -2675,6 +3022,19 @@ with tab_verval:
                                     "status_confirmed",
                                     False,
                                 ):
+                                    st.session_state[
+                                        "proposal_context_cache"
+                                    ].pop(
+                                        current_application_id,
+                                        None,
+                                    )
+                                    st.session_state[
+                                        "verification_inspection_cache"
+                                    ].pop(
+                                        current_application_id,
+                                        None,
+                                    )
+
                                     try:
                                         current_index = next(
                                             (
@@ -3237,6 +3597,40 @@ with tab_verval:
                                     "Pengecekan dilakukan dengan GET ke endpoint "
                                     "diproseskanwil/data-index."
                                 )
+
+                                lookup_attempts = (
+                                    live_evidence.get(
+                                        "processed_lookup_attempts",
+                                        [],
+                                    )
+                                    or []
+                                )
+
+                                if lookup_attempts:
+                                    found_strategy = next(
+                                        (
+                                            item.get(
+                                                "strategy",
+                                                ""
+                                            )
+                                            for item in lookup_attempts
+                                            if item.get(
+                                                "found"
+                                            )
+                                        ),
+                                        "",
+                                    )
+
+                                    if found_strategy:
+                                        st.caption(
+                                            "Record ditemukan melalui strategi GET: "
+                                            + found_strategy
+                                        )
+                                    else:
+                                        st.caption(
+                                            "Lookup GET telah mencoba application_id, "
+                                            "NSPP, nama lembaga, dan scan tanpa filter."
+                                        )
                             st.write(
                                 "**Status ditemukan di response/detail:**",
                                 (
@@ -3311,6 +3705,18 @@ with tab_verval:
                                     ),
                                 )
 
+                                if (
+                                    pending.get(
+                                        "decision"
+                                    )
+                                    == "reject_institution"
+                                ):
+                                    st.caption(
+                                        "Bukti ideal Tolak → Lembaga: ID pengajuan "
+                                        "yang sama, status Ditolak Kanwil, serta bukti "
+                                        "tujuan/catatan 'Catatan kanwil ke lembaga'."
+                                    )
+
                         with st.expander(
                             "Detail bukti verifikasi",
                             expanded=False,
@@ -3321,3 +3727,97 @@ with tab_verval:
                             st.json(
                                 safe_evidence
                             )
+
+                        if (
+                            live_evidence
+                            and not live_evidence.get(
+                                "confirmed",
+                                False,
+                            )
+                        ):
+                            st.info(
+                                "POST ulang tetap diblokir. Tombol berikut hanya "
+                                "melakukan pengecekan GET dan tidak mengirim keputusan "
+                                "baru ke SIMBA."
+                            )
+
+                            if st.button(
+                                "🔎 Periksa Ulang Hasil SIMBA (GET saja)",
+                                type="secondary",
+                                use_container_width=True,
+                                key=(
+                                    "recheck_post_result_"
+                                    + str(
+                                        institution.application_id
+                                    )
+                                ),
+                            ):
+                                previous_submit_result = (
+                                    st.session_state.get(
+                                        "live_submission_result",
+                                        {}
+                                    )
+                                    or {}
+                                )
+
+                                with st.spinner(
+                                    "Mencari kembali record hasil Kanwil tanpa POST..."
+                                ):
+                                    rechecked_evidence = (
+                                        live_engine.verify_after_submit(
+                                            institution=(
+                                                institution
+                                            ),
+                                            decision=(
+                                                pending[
+                                                    "decision"
+                                                ]
+                                            ),
+                                            submit_result=(
+                                                previous_submit_result
+                                            ),
+                                            institution_ajax_url=(
+                                                institution_ajax_url
+                                            ),
+                                            institution_method=(
+                                                institution_method
+                                            ),
+                                            institution_page_size=int(
+                                                page_size
+                                            ),
+                                            institution_extra_params=(
+                                                parse_extra_params(
+                                                    institution_params_text
+                                                )
+                                            ),
+                                            expected_note=(
+                                                pending.get(
+                                                    "note",
+                                                    "",
+                                                )
+                                            ),
+                                        )
+                                    )
+
+                                st.session_state[
+                                    "live_verification_evidence"
+                                ] = rechecked_evidence
+
+                                if rechecked_evidence.get(
+                                    "confirmed",
+                                    False,
+                                ):
+                                    st.session_state[
+                                        "proposal_context_cache"
+                                    ].pop(
+                                        current_application_id,
+                                        None,
+                                    )
+                                    st.session_state[
+                                        "verification_inspection_cache"
+                                    ].pop(
+                                        current_application_id,
+                                        None,
+                                    )
+
+                                st.rerun()

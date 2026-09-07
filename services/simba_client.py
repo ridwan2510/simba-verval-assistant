@@ -861,6 +861,9 @@ class SimbaClient:
             "profile_url": resolved_url,
             "proposal_review_url": "",
             "verification_url": "",
+            # Internal-only cache: app dapat membaca profil dari HTML yang sama
+            # tanpa GET detail kedua.
+            "_detail_html": html_text,
         }
 
         for element in soup.select(
@@ -1028,15 +1031,16 @@ class SimbaClient:
 
         return ""
 
-    def parse_profile(
+    def parse_profile_html(
         self,
-        url: str,
+        html_text: str,
     ) -> dict:
-        if not url:
+        if not html_text:
             return {}
 
-        soup, _ = self.get_soup(
-            url
+        soup = BeautifulSoup(
+            html_text,
+            "lxml",
         )
 
         profile = {}
@@ -1080,12 +1084,35 @@ class SimbaClient:
 
         return profile
 
-    def get_proposal_completeness(
+    def parse_profile(
         self,
-        review_url: str,
+        url: str,
     ) -> dict:
-        soup, _ = self.get_soup(
-            review_url
+        if not url:
+            return {}
+
+        html_text, _ = self.get_html(
+            url
+        )
+
+        return self.parse_profile_html(
+            html_text
+        )
+
+    def get_proposal_completeness_html(
+        self,
+        html_text: str,
+    ) -> dict:
+        if not html_text:
+            return {
+                "completed": None,
+                "total": None,
+                "text": "",
+            }
+
+        soup = BeautifulSoup(
+            html_text,
+            "lxml",
         )
 
         text = clean_text(
@@ -1128,14 +1155,23 @@ class SimbaClient:
             ),
         }
 
-    def discover_review_ajax_urls(
+    def get_proposal_completeness(
         self,
         review_url: str,
-    ) -> list[str]:
+    ) -> dict:
         html_text, _ = self.get_html(
             review_url
         )
 
+        return self.get_proposal_completeness_html(
+            html_text
+        )
+
+    def discover_review_ajax_urls_html(
+        self,
+        review_url: str,
+        html_text: str,
+    ) -> list[str]:
         candidates = []
 
         patterns = [
@@ -1184,6 +1220,21 @@ class SimbaClient:
                         )
 
         return candidates
+
+
+    def discover_review_ajax_urls(
+        self,
+        review_url: str,
+    ) -> list[str]:
+        html_text, _ = self.get_html(
+            review_url
+        )
+
+        return self.discover_review_ajax_urls_html(
+            review_url,
+            html_text,
+        )
+
 
     def _documents_from_payload(
         self,
@@ -1379,6 +1430,7 @@ class SimbaClient:
         method: str = "GET",
         page_size: int = 500,
         extra_params: Optional[dict] = None,
+        review_html_text: str = "",
     ) -> tuple[list[ProposalDocument], dict]:
         candidates = []
 
@@ -1389,11 +1441,18 @@ class SimbaClient:
                 )
             )
 
-        for url in (
-            self.discover_review_ajax_urls(
+        discovered_urls = (
+            self.discover_review_ajax_urls_html(
+                review_url,
+                review_html_text,
+            )
+            if review_html_text
+            else self.discover_review_ajax_urls(
                 review_url
             )
-        ):
+        )
+
+        for url in discovered_urls:
             if url not in candidates:
                 candidates.append(
                     url

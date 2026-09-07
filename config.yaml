@@ -1,6 +1,6 @@
 base_url: "https://simba.kemenag.go.id"
 
-version: "V8.1.5 Streamlit Cloud Fix"
+version: "V8.1.7 GET Recheck"
 
 safety:
   default_mode: "dry_run"

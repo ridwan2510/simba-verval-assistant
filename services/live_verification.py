@@ -2440,6 +2440,44 @@ class VerificationFormEngine:
             f"{province_id}/{district_id}"
         )
 
+    @staticmethod
+    def _clean_lookup_extra_params(
+        params: Optional[dict],
+    ) -> dict:
+        """Buang parameter DataTables lama saat verifikasi pasca-POST."""
+        cleaned = {}
+
+        for key, value in dict(
+            params or {}
+        ).items():
+            text = str(
+                key or ""
+            )
+            lower = text.lower()
+
+            volatile = (
+                lower in {
+                    "draw",
+                    "start",
+                    "length",
+                    "_",
+                }
+                or lower.startswith(
+                    "columns["
+                )
+                or lower.startswith(
+                    "order["
+                )
+                or lower.startswith(
+                    "search["
+                )
+            )
+
+            if not volatile:
+                cleaned[text] = value
+
+        return cleaned
+
     def _query_processed_record(
         self,
         *,
@@ -2450,8 +2488,15 @@ class VerificationFormEngine:
         institution_extra_params: Optional[dict],
     ) -> dict:
         """
-        GET endpoint diproseskanwil/data-index dan cari application_id
-        yang sama. Gunakan global search NSPP agar hasil kecil.
+        GET-only lookup pada endpoint hasil Kanwil.
+
+        Strategi:
+        - application_id
+        - NSPP
+        - nama lembaga
+        - scan GET tanpa filter + exact-match application_id
+
+        Fungsi ini tidak melakukan POST.
         """
         processed_url = (
             self._derive_processed_ajax_url(
@@ -2472,66 +2517,310 @@ class VerificationFormEngine:
                 "error": (
                     "Endpoint hasil Kanwil tidak dapat dibentuk."
                 ),
+                "attempts": [],
             }
 
-        extra_params = dict(
-            institution_extra_params
-            or {}
+        base_params = (
+            self._clean_lookup_extra_params(
+                institution_extra_params
+            )
         )
 
-        # Override global search dengan NSPP target.
-        extra_params[
-            "search[value]"
-        ] = (
-            institution.nspp
-            or institution.name
-            or institution.application_id
+        attempts = []
+        target_id = str(
+            institution.application_id
+            or ""
+        ).strip()
+
+        search_terms = []
+
+        for label, value in (
+            ("application_id", target_id),
+            ("nspp", institution.nspp),
+            ("nama_lembaga", institution.name),
+        ):
+            text = str(
+                value or ""
+            ).strip()
+
+            if (
+                text
+                and text not in {
+                    item[1]
+                    for item in search_terms
+                }
+            ):
+                search_terms.append(
+                    (label, text)
+                )
+
+        final_url_seen = processed_url
+
+        for label, term in search_terms:
+            params = dict(
+                base_params
+            )
+            params[
+                "search[value]"
+            ] = term
+            params[
+                "search[regex]"
+            ] = "false"
+
+            try:
+                payload, final_url = (
+                    self.client.request_datatable(
+                        processed_url,
+                        method="GET",
+                        page_size=50,
+                        start=0,
+                        extra_params=params,
+                    )
+                )
+                final_url_seen = final_url
+
+                found, record = (
+                    self._record_from_payload(
+                        payload,
+                        target_id,
+                    )
+                )
+
+                rows = payload.get(
+                    "data",
+                    []
+                )
+
+                attempts.append(
+                    {
+                        "strategy": (
+                            "server_search_"
+                            + label
+                        ),
+                        "records_total": (
+                            payload.get(
+                                "recordsTotal"
+                            )
+                        ),
+                        "records_filtered": (
+                            payload.get(
+                                "recordsFiltered"
+                            )
+                        ),
+                        "rows_received": len(
+                            rows
+                            if isinstance(
+                                rows,
+                                list,
+                            )
+                            else []
+                        ),
+                        "found": bool(
+                            found
+                        ),
+                    }
+                )
+
+                if found:
+                    return {
+                        "url": final_url,
+                        "found": True,
+                        "record": record,
+                        "error": "",
+                        "attempts": attempts,
+                    }
+
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "strategy": (
+                            "server_search_"
+                            + label
+                        ),
+                        "found": False,
+                        "error": str(
+                            exc
+                        ),
+                    }
+                )
+
+        scan_params = dict(
+            base_params
         )
-        extra_params[
+        scan_params[
+            "search[value]"
+        ] = ""
+        scan_params[
             "search[regex]"
         ] = "false"
 
-        try:
-            payload, final_url = (
-                self.client.request_datatable(
-                    processed_url,
-                    method="GET",
-                    page_size=max(
-                        25,
-                        min(
-                            int(
-                                institution_page_size
-                            ),
-                            500,
-                        ),
+        page_size = 50
+        start_offset = 0
+        max_scan = max(
+            200,
+            min(
+                max(
+                    int(
+                        institution_page_size
+                        or 500
                     ),
-                    extra_params=extra_params,
-                )
-            )
-
-            found, record = (
-                self._record_from_payload(
-                    payload,
-                    institution.application_id,
-                )
-            )
-
-            return {
-                "url": final_url,
-                "found": found,
-                "record": record,
-                "error": "",
-            }
-
-        except Exception as exc:
-            return {
-                "url": processed_url,
-                "found": False,
-                "record": {},
-                "error": str(
-                    exc
+                    200,
                 ),
-            }
+                1000,
+            ),
+        )
+        total_hint = None
+        seen_ids = set()
+
+        while start_offset < max_scan:
+            try:
+                payload, final_url = (
+                    self.client.request_datatable(
+                        processed_url,
+                        method="GET",
+                        page_size=page_size,
+                        start=start_offset,
+                        extra_params=scan_params,
+                    )
+                )
+                final_url_seen = final_url
+
+                rows = payload.get(
+                    "data",
+                    []
+                )
+
+                if not isinstance(
+                    rows,
+                    list,
+                ):
+                    rows = []
+
+                if total_hint is None:
+                    total_hint = int(
+                        payload.get(
+                            "recordsFiltered",
+                            payload.get(
+                                "recordsTotal",
+                                0,
+                            ),
+                        )
+                        or 0
+                    )
+
+                found, record = (
+                    self._record_from_payload(
+                        payload,
+                        target_id,
+                    )
+                )
+
+                attempts.append(
+                    {
+                        "strategy": (
+                            "unfiltered_scan"
+                        ),
+                        "start": (
+                            start_offset
+                        ),
+                        "rows_received": len(
+                            rows
+                        ),
+                        "records_total": (
+                            payload.get(
+                                "recordsTotal"
+                            )
+                        ),
+                        "records_filtered": (
+                            payload.get(
+                                "recordsFiltered"
+                            )
+                        ),
+                        "found": bool(
+                            found
+                        ),
+                    }
+                )
+
+                if found:
+                    return {
+                        "url": final_url,
+                        "found": True,
+                        "record": record,
+                        "error": "",
+                        "attempts": attempts,
+                    }
+
+                if not rows:
+                    break
+
+                current_ids = {
+                    str(
+                        row.get(
+                            "id",
+                            ""
+                        )
+                    )
+                    for row in rows
+                    if isinstance(
+                        row,
+                        dict,
+                    )
+                    and row.get(
+                        "id"
+                    )
+                }
+
+                if (
+                    current_ids
+                    and current_ids.issubset(
+                        seen_ids
+                    )
+                ):
+                    break
+
+                seen_ids.update(
+                    current_ids
+                )
+
+                start_offset += len(
+                    rows
+                )
+
+                if (
+                    total_hint
+                    and start_offset
+                    >= total_hint
+                ):
+                    break
+
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "strategy": (
+                            "unfiltered_scan"
+                        ),
+                        "start": (
+                            start_offset
+                        ),
+                        "found": False,
+                        "error": str(
+                            exc
+                        ),
+                    }
+                )
+                break
+
+        return {
+            "url": final_url_seen,
+            "found": False,
+            "record": {},
+            "error": (
+                "Record belum ditemukan setelah pencarian "
+                "application_id, NSPP, nama lembaga, dan scan GET tanpa filter."
+            ),
+            "attempts": attempts,
+        }
 
     def verify_after_submit(
         self,
@@ -2939,6 +3228,18 @@ class VerificationFormEngine:
             "processed_ajax_error": (
                 processed_result.get(
                     "error",
+                    ""
+                )
+            ),
+            "processed_lookup_attempts": (
+                processed_result.get(
+                    "attempts",
+                    []
+                )
+            ),
+            "queue_record_id": (
+                queue_record.get(
+                    "id",
                     ""
                 )
             ),

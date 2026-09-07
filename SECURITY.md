@@ -112,3 +112,34 @@ Perbaikan deployment cloud:
 - Jika load baru gagal, daftar/metric lama dibersihkan sehingga angka lama tidak
   terlihat sebagai hasil request yang baru.
 - LIVE POST verifikasi tidak mendapat auto-retry dan pengaman lama tetap aktif.
+
+
+## V8.1.6 — LAN Performance
+
+Optimasi untuk penggunaan dari komputer lokal/LAN:
+
+- Streamlit tidak lagi mengambil ulang profil, link detail, kelengkapan, dan daftar
+  dokumen dari SIMBA pada setiap `st.rerun()`. Data proposal disimpan pada
+  `st.session_state` per browser selama 10 menit.
+- Form LIVE untuk tampilan di-cache 60 detik. **Saat benar-benar POST,
+  `submit_once()` tetap mengambil form dan CSRF terbaru**, jadi pengaman LIVE tidak
+  dikurangi.
+- HTML halaman detail dipakai ulang untuk membaca profil sehingga tidak perlu GET
+  detail kedua.
+- HTML halaman Review Proposal dipakai ulang untuk kelengkapan dan discovery AJAX.
+- Daftar dokumen diminta dengan `length=100`, bukan 500.
+- Cache PDF dibersihkan ketika berpindah lembaga agar RAM komputer server tidak
+  terus membesar.
+- Tombol `Refresh Proposal` disediakan bila pengguna ingin memaksa mengambil data
+  terbaru dari SIMBA.
+- Mengganti Cookie Session otomatis membuang data/cache sesi sebelumnya.
+
+
+## V8.1.7 — GET Recheck Tolak → Lembaga
+
+- Jika POST sudah HTTP 200 tetapi hasil belum terkonfirmasi, POST ulang tetap diblokir.
+- Ada tombol **Periksa Ulang Hasil SIMBA (GET saja)** yang tidak mengirim keputusan baru.
+- Lookup hasil Kanwil mencoba application ID, NSPP, nama lembaga, lalu scan endpoint tanpa filter.
+- Parameter DataTables lama tidak dipakai untuk verifikasi pasca-POST.
+- Untuk Tolak → Lembaga, bukti ideal: ID sama, status `Ditolak Kanwil`,
+  dan bukti tujuan/catatan `Catatan kanwil ke lembaga`.
