@@ -80,3 +80,19 @@ LIVE Kabupaten kembali diblokir daripada menebak.
 
 Post-verification Kabupaten tetap memerlukan bukti server:
 `Ditolak kanwil ke kabupaten` / `Catatan kanwil ke kabupaten`.
+
+
+## V8.1.4 — Tutorial Penggunaan di Halaman Awal
+
+Halaman awal aplikasi sekarang memiliki tutorial bergambar untuk:
+1. login ke SIMBA;
+2. membuka menu Pengajuan;
+3. membuka Inspect/Developer Tools;
+4. memilih Network;
+5. memilih Fetch/XHR;
+6. membuka Headers dan menyalin Request URL;
+7. membuka Cookies/Request Headers dan menyalin Cookie Session;
+8. menempel Request URL + Cookie ke sidebar lalu Muat Data.
+
+Screenshot Cookie yang disertakan di repository **sudah disamarkan**. Cookie/session
+asli tidak disimpan dalam project, GitHub, README, maupun Streamlit Secrets.

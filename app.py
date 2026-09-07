@@ -160,6 +160,147 @@ st.markdown(
 )
 
 
+
+def render_usage_tutorial(
+    expanded: bool = False,
+) -> None:
+    """Tutorial memperoleh Request URL dan Cookie Session dari Chrome DevTools."""
+    tutorial_dir = (
+        Path(__file__).resolve().parent
+        / "assets"
+        / "tutorial"
+    )
+
+    with st.expander(
+        "📘 Tutorial Penggunaan Aplikasi — Login SIMBA sampai Muat Data",
+        expanded=expanded,
+    ):
+        st.markdown(
+            """
+            Tutorial ini digunakan untuk memperoleh **Request URL AJAX Lembaga**
+            dan **Cookie Session** yang diperlukan aplikasi. Ikuti langkah secara
+            berurutan pada browser Chrome/Chromium yang sudah login ke SIMBA.
+            """
+        )
+
+        st.warning(
+            "🔐 Cookie Session adalah kredensial sesi yang sensitif. "
+            "Jangan mengirimkan Cookie ke orang lain, jangan memasukkannya ke "
+            "GitHub, README, screenshot publik, atau Streamlit Secrets. "
+            "Screenshot Cookie pada tutorial ini sudah disamarkan."
+        )
+
+        st.markdown("### 1. Login ke SIMBA")
+        st.markdown(
+            "Buka SIMBA pada browser dan **login menggunakan akun petugas yang "
+            "berwenang**. Setelah berhasil masuk, tetap gunakan tab browser yang "
+            "sama agar session/cookie yang diambil masih aktif."
+        )
+
+        st.markdown("### 2. Masuk ke daftar pengajuan")
+        st.markdown(
+            "Buka menu verifikasi/pengajuan yang akan diperiksa, lalu klik tombol "
+            "**Pengajuan** sehingga daftar lembaga tampil."
+        )
+        img = tutorial_dir / "01_pengajuan.png"
+        if img.exists():
+            st.image(
+                str(img),
+                caption="Klik Pengajuan untuk membuka daftar proposal/lembaga.",
+                width=520,
+            )
+
+        st.markdown("### 3. Buka Inspect / Developer Tools")
+        st.markdown(
+            "Klik kanan pada area halaman SIMBA, lalu pilih **Inspect**. "
+            "Alternatifnya tekan **F12** atau **Ctrl+Shift+I**."
+        )
+        img = tutorial_dir / "02_inspect.png"
+        if img.exists():
+            st.image(
+                str(img),
+                caption="Klik kanan halaman → Inspect.",
+                width=360,
+            )
+
+        st.markdown("### 4. Pilih tab Network")
+        st.markdown(
+            "Pada Developer Tools pilih tab **Network**. Jika daftar request masih "
+            "kosong, biarkan Network terbuka lalu **reload halaman** atau buka "
+            "kembali menu Pengajuan."
+        )
+        img = tutorial_dir / "03_network.png"
+        if img.exists():
+            st.image(
+                str(img),
+                caption="Pilih tab Network pada Chrome DevTools.",
+                use_container_width=True,
+            )
+
+        st.markdown("### 5. Aktifkan filter Fetch/XHR")
+        st.markdown(
+            "Klik **Fetch/XHR** agar yang tampil terutama request data aplikasi. "
+            "Pilih request yang menuju domain **simba.kemenag.go.id** dan berisi "
+            "data daftar lembaga. Hindari request ke `google-analytics.com`."
+        )
+        img = tutorial_dir / "04_fetch_xhr.png"
+        if img.exists():
+            st.image(
+                str(img),
+                caption="Gunakan filter Fetch/XHR.",
+                use_container_width=True,
+            )
+
+        st.markdown("### 6. Salin Request URL")
+        st.markdown(
+            "Klik request SIMBA yang benar, buka tab **Headers**, lalu pada bagian "
+            "**General → Request URL** salin URL **secara lengkap**, termasuk query "
+            "parameter jika ada. Tempel URL tersebut ke kolom **Request URL AJAX "
+            "Lembaga** pada sidebar aplikasi."
+        )
+        img = tutorial_dir / "05_request_url.png"
+        if img.exists():
+            st.image(
+                str(img),
+                caption="Headers → General → Request URL. Salin URL lengkap.",
+                use_container_width=True,
+            )
+
+        st.markdown("### 7. Salin Cookie Session")
+        st.markdown(
+            "Masih pada request SIMBA yang sama, buka tab **Cookies** atau cari "
+            "**Request Headers → Cookie**. Salin **seluruh nilai Cookie** yang "
+            "dikirim browser untuk request SIMBA, lalu tempel ke kolom **Cookie "
+            "Session** pada sidebar aplikasi. Jangan hanya menyalin satu cookie "
+            "jika browser mengirim beberapa pasangan cookie."
+        )
+        img = tutorial_dir / "06_cookie_redacted.png"
+        if img.exists():
+            st.image(
+                str(img),
+                caption=(
+                    "Contoh lokasi Cookie. Nilai pada gambar sengaja disamarkan; "
+                    "di browser Anda salin nilai asli secara privat."
+                ),
+                use_container_width=True,
+            )
+
+        st.markdown("### 8. Isi koneksi di sidebar dan Muat Data")
+        st.markdown(
+            "Setelah Request URL dan Cookie diperoleh, isi sidebar aplikasi: "
+            "**Cookie Session**, **Request URL AJAX Lembaga**, dan **Method "
+            "Lembaga** sesuai Method yang terlihat di Network (GET/POST). "
+            "Kemudian klik **🔄 Muat Data**. Untuk pengujian pertama gunakan "
+            "**DRY RUN**, setelah seluruh data terbaca benar barulah gunakan "
+            "**LIVE SIMBA**."
+        )
+
+        st.info(
+            "Jika data tidak muncul, ambil Request URL dan Cookie yang terbaru. "
+            "Session SIMBA dapat kedaluwarsa setelah logout atau setelah beberapa waktu."
+        )
+
+
 def load_config():
     config_path = Path(
         "config.yaml"
@@ -466,7 +607,7 @@ st.title(
 )
 
 st.caption(
-    "Asisten pemeriksaan proposal bantuan SIMBA — V8.1.3 Kabupaten LIVE Verified (Halaqah • Kemitraan • Prasarana)."
+    "Asisten pemeriksaan proposal bantuan SIMBA — V8.1.4 Tutorial Penggunaan (Halaqah • Kemitraan • Prasarana)."
 )
 
 
@@ -609,9 +750,14 @@ with st.sidebar:
         )
 
 
+render_usage_tutorial(
+    expanded=not bool(cookie_header),
+)
+
+
 if not cookie_header:
     st.info(
-        "Masukkan Cookie Session SIMBA di sidebar."
+        "Masukkan Cookie Session SIMBA di sidebar setelah mengikuti tutorial di atas."
     )
     st.stop()
 
