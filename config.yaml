@@ -1,6 +1,6 @@
 base_url: "https://simba.kemenag.go.id"
 
-version: "V8.1.4 Tutorial Penggunaan"
+version: "V8.1.5 Streamlit Cloud Fix"
 
 safety:
   default_mode: "dry_run"

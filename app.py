@@ -607,7 +607,7 @@ st.title(
 )
 
 st.caption(
-    "Asisten pemeriksaan proposal bantuan SIMBA — V8.1.4 Tutorial Penggunaan (Halaqah • Kemitraan • Prasarana)."
+    "Asisten pemeriksaan proposal bantuan SIMBA — V8.1.5 Streamlit Cloud Fix (Halaqah • Kemitraan • Prasarana)."
 )
 
 
@@ -669,12 +669,16 @@ with st.sidebar:
     )
 
     page_size = st.number_input(
-        "Jumlah Data",
+        "Maksimum Data Dimuat",
         min_value=10,
         max_value=1000,
         value=500,
         step=10,
         key="page_size",
+        help=(
+            "Aplikasi mengambil data bertahap maksimal 50 record per request "
+            "agar lebih stabil di Streamlit Community Cloud."
+        ),
     )
 
     institution_params_text = (
@@ -909,6 +913,15 @@ with tab_verval:
         )
 
     if load_clicked:
+        # Jangan tampilkan data lama seolah-olah berasal dari request terbaru
+        # bila koneksi berikutnya timeout/gagal.
+        st.session_state[
+            "institutions"
+        ] = []
+        st.session_state[
+            "institution_meta"
+        ] = {}
+
         try:
             institutions, meta = (
                 client.list_institutions_ajax(
@@ -967,6 +980,29 @@ with tab_verval:
                 f"{len(institutions)} lembaga berhasil dimuat."
             )
 
+            if meta.get(
+                "url_was_sanitized"
+            ):
+                st.info(
+                    "ℹ️ Request URL dari DevTools berisi parameter DataTables "
+                    "lama. Aplikasi sudah membersihkannya otomatis agar filter "
+                    "pencarian lama tidak ikut terbawa."
+                )
+
+            records_filtered = int(
+                meta.get(
+                    "recordsFiltered",
+                    0,
+                )
+                or 0
+            )
+
+            if len(institutions) < records_filtered:
+                st.warning(
+                    "SIMBA melaporkan lebih banyak data daripada yang berhasil "
+                    "dimuat. Coba klik Muat Data lagi atau periksa tab Debug."
+                )
+
         except SimbaError as exc:
             st.error(
                 str(exc)
@@ -1011,6 +1047,12 @@ with tab_verval:
                 "loaded",
                 0,
             ),
+        )
+
+        st.caption(
+            "Total SIMBA = seluruh record pada endpoint; Filtered = hasil "
+            "filter server; Termuat = record yang benar-benar berhasil diambil "
+            "aplikasi."
         )
 
     if not institutions:

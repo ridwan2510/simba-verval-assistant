@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -142,6 +142,70 @@ class SimbaClient:
             path_or_url.lstrip("/"),
         )
 
+    @staticmethod
+    def sanitize_datatable_url(
+        url: str,
+    ) -> tuple[str, list[str]]:
+        """
+        Bersihkan query DataTables yang ikut tercopy dari Chrome DevTools.
+
+        Request URL pada tab Network biasanya sangat panjang karena berisi
+        draw/start/length/columns/order/search. Jika URL mentah itu dipakai lagi,
+        filter pencarian lama dapat ikut terbawa sehingga recordsFiltered kecil
+        (mis. 2 dari 145), dan URL yang sangat panjang juga lebih mudah timeout
+        saat dijalankan dari Streamlit Community Cloud.
+
+        Parameter non-DataTables tetap dipertahankan.
+        """
+        raw = str(url or "").strip()
+
+        if not raw:
+            return raw, []
+
+        parts = urlsplit(raw)
+        kept = []
+        removed = []
+
+        for key, value in parse_qsl(
+            parts.query,
+            keep_blank_values=True,
+        ):
+            lower = key.lower()
+
+            is_datatable = (
+                lower in {
+                    "draw",
+                    "start",
+                    "length",
+                    "_",
+                }
+                or lower.startswith("columns[")
+                or lower.startswith("order[")
+                or lower.startswith("search[")
+            )
+
+            if is_datatable:
+                removed.append(key)
+            else:
+                kept.append((key, value))
+
+        clean_query = urlencode(
+            kept,
+            doseq=True,
+        )
+
+        cleaned = urlunsplit(
+            (
+                parts.scheme,
+                parts.netloc,
+                parts.path,
+                clean_query,
+                "",
+            )
+        )
+
+        return cleaned, removed
+
     def _request(
         self,
         method: str,
@@ -256,7 +320,8 @@ class SimbaClient:
         url: str,
         *,
         method: str = "GET",
-        page_size: int = 500,
+        page_size: int = 100,
+        start: int = 0,
         extra_params: Optional[dict] = None,
     ) -> tuple[dict, str]:
         method = method.upper().strip()
@@ -271,7 +336,7 @@ class SimbaClient:
 
         params = {
             "draw": 1,
-            "start": 0,
+            "start": int(start),
             "length": int(page_size),
         }
 
@@ -290,23 +355,53 @@ class SimbaClient:
             "Referer": self.base_url + "/",
         }
 
-        final_url = self.make_url(
+        raw_url = self.make_url(
             url
         )
 
-        if method == "GET":
-            response = self._request(
-                "GET",
-                final_url,
-                params=params,
-                headers=headers,
+        final_url, removed_query_keys = (
+            self.sanitize_datatable_url(
+                raw_url
             )
-        else:
-            response = self._request(
-                "POST",
-                final_url,
-                data=params,
-                headers=headers,
+        )
+
+        # DataTables adalah endpoint baca. Aman melakukan satu retry jika
+        # request pertama timeout dari hosting cloud.
+        response = None
+        last_error = None
+
+        for attempt in range(2):
+            try:
+                if method == "GET":
+                    response = self._request(
+                        "GET",
+                        final_url,
+                        params=params,
+                        headers=headers,
+                        timeout=(15, 45),
+                    )
+                else:
+                    response = self._request(
+                        "POST",
+                        final_url,
+                        data=params,
+                        headers=headers,
+                        timeout=(15, 45),
+                    )
+                break
+
+            except SimbaError as exc:
+                last_error = exc
+
+                if (
+                    "timeout" not in str(exc).lower()
+                    or attempt >= 1
+                ):
+                    raise
+
+        if response is None:
+            raise last_error or SimbaError(
+                "Request DataTables gagal."
             )
 
         try:
@@ -330,6 +425,14 @@ class SimbaClient:
                 "Response JSON bukan object."
             )
 
+        payload["_client_request_meta"] = {
+            "raw_url": raw_url,
+            "clean_url": final_url,
+            "removed_query_keys": removed_query_keys,
+            "start": int(start),
+            "length": int(page_size),
+        }
+
         return (
             payload,
             response.url,
@@ -348,27 +451,136 @@ class SimbaClient:
                 "Request URL AJAX Lembaga belum diisi."
             )
 
-        payload, final_url = (
+        requested_limit = max(
+            10,
+            int(page_size),
+        )
+
+        # Community Cloud lebih stabil bila data besar diambil bertahap.
+        batch_size = min(
+            requested_limit,
+            50,
+        )
+
+        first_payload, final_url = (
             self.request_datatable(
                 ajax_url,
                 method=method,
-                page_size=page_size,
+                page_size=batch_size,
+                start=0,
                 extra_params=extra_params,
             )
         )
 
-        rows = payload.get(
+        first_rows = first_payload.get(
             "data",
             [],
         )
 
         if not isinstance(
-            rows,
+            first_rows,
             list,
         ):
             raise SimbaError(
                 "Field data daftar lembaga bukan list."
             )
+
+        rows = list(first_rows)
+
+        records_filtered = int(
+            first_payload.get(
+                "recordsFiltered",
+                len(rows),
+            )
+            or 0
+        )
+
+        target_count = min(
+            records_filtered,
+            requested_limit,
+        )
+
+        # Ambil halaman berikutnya sampai jumlah target tercapai.
+        # Dedupe berdasarkan application id untuk berjaga-jaga jika server
+        # mengabaikan offset start.
+        seen_ids = {
+            str(row.get("id") or "")
+            for row in rows
+            if isinstance(row, dict)
+        }
+
+        next_start = len(rows)
+
+        while (
+            len(rows) < target_count
+            and next_start < records_filtered
+        ):
+            page_payload, _ = (
+                self.request_datatable(
+                    ajax_url,
+                    method=method,
+                    page_size=min(
+                        batch_size,
+                        target_count - len(rows),
+                    ),
+                    start=next_start,
+                    extra_params=extra_params,
+                )
+            )
+
+            page_rows = page_payload.get(
+                "data",
+                [],
+            )
+
+            if not isinstance(
+                page_rows,
+                list,
+            ) or not page_rows:
+                break
+
+            added = 0
+
+            for row in page_rows:
+                if not isinstance(
+                    row,
+                    dict,
+                ):
+                    continue
+
+                row_id = str(
+                    row.get("id")
+                    or ""
+                )
+
+                if (
+                    row_id
+                    and row_id in seen_ids
+                ):
+                    continue
+
+                rows.append(row)
+                added += 1
+
+                if row_id:
+                    seen_ids.add(
+                        row_id
+                    )
+
+                if len(rows) >= target_count:
+                    break
+
+            # DataTables memakai offset terhadap jumlah row, bukan nomor halaman.
+            next_start += len(page_rows)
+
+            if added == 0:
+                break
+
+        payload = dict(
+            first_payload
+        )
+        payload["data"] = rows
+        payload["loaded_paginated"] = len(rows)
 
         institutions = []
 
@@ -481,6 +693,11 @@ class SimbaClient:
                 )
             )
 
+        request_meta = payload.get(
+            "_client_request_meta",
+            {},
+        )
+
         meta = {
             "draw": payload.get("draw"),
             "recordsTotal": payload.get(
@@ -495,6 +712,23 @@ class SimbaClient:
                 institutions
             ),
             "final_url": final_url,
+            "clean_url": request_meta.get(
+                "clean_url",
+                final_url,
+            ),
+            "url_was_sanitized": bool(
+                request_meta.get(
+                    "removed_query_keys"
+                )
+            ),
+            "removed_query_count": len(
+                request_meta.get(
+                    "removed_query_keys",
+                    [],
+                )
+            ),
+            "batch_size": batch_size,
+            "requested_limit": requested_limit,
         }
 
         return (

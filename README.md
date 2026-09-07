@@ -168,3 +168,19 @@ Halaman awal aplikasi sekarang memiliki tutorial bergambar untuk:
 
 Screenshot Cookie yang disertakan di repository **sudah disamarkan**. Cookie/session
 asli tidak disimpan dalam project, GitHub, README, maupun Streamlit Secrets.
+
+
+## V8.1.5 — Streamlit Community Cloud Fix
+
+Perbaikan deployment cloud:
+
+- Request URL DataTables yang dicopy dari DevTools otomatis dibersihkan dari
+  `draw`, `start`, `length`, `columns[...]`, `order[...]`, `search[...]`, dan `_`.
+  Ini mencegah filter pencarian lama ikut terbawa (contoh: `145 total / 2 filtered`).
+- Daftar lembaga diambil bertahap maksimal 50 record per request agar respons
+  SIMBA lebih ringan dan lebih stabil dari Streamlit Community Cloud.
+- Endpoint DataTables boleh retry satu kali khusus jika timeout karena endpoint
+  tersebut hanya membaca data.
+- Jika load baru gagal, daftar/metric lama dibersihkan sehingga angka lama tidak
+  terlihat sebagai hasil request yang baru.
+- LIVE POST verifikasi tidak mendapat auto-retry dan pengaman lama tetap aktif.
